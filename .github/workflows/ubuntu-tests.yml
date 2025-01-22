@@ -10,6 +10,7 @@ on:
       - '!.github/workflows/ubuntu-tests.yml'
     branches:
       - main
+      - release/**/*
   pull_request:
     paths-ignore:
       - 'aider/website/**'
@@ -19,6 +20,7 @@ on:
       - '!.github/workflows/ubuntu-tests.yml'
     branches:
       - main
+      - release/**/*
 
 jobs:
   build:
