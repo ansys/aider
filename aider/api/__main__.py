@@ -28,9 +28,34 @@ from pydantic import BaseModel
 
 from aider.api import *
 
+BRANCH_PREFIX = "aider"
+
 app = FastAPI(
-    title="Completion API", description="An OpenAPI-compatible completion endpoint", version="1.0.0"
+    title="Assistants API",
+    description="An OpenAPI-compatible assistant endpoint",
+    version="1.0.0",
 )
+
+
+@app.post("v1/assistants/createAssistant")
+async def create_assistant() -> None:
+    """
+    This is going to create a branch on the git repo which we will use as the id.
+    Also resets all chat history files and force tracks them.
+    """
+    raise NotImplementedError()
+
+
+@app.post("/listAssistants")
+async def list_assistants() -> None:
+    """This is going to list all branches with the branch prefix"""
+    raise NotImplementedError()
+
+
+@app.post("/deleteAssistant")
+async def delete_assistant() -> None:
+    """This is going to delete the branch. Useful if you need to recreate it"""
+    raise NotImplementedError()
 
 
 # Request model

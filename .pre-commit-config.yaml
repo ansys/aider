@@ -1,21 +1,25 @@
 repos:
   - repo: https://github.com/PyCQA/isort
-    rev: 5.12.0
+    rev: 5.13.2
     hooks:
       - id: isort
-        args: ["--profile", "black"]
   - repo: https://github.com/psf/black
-    rev: 23.3.0
+    rev: 24.10.0
     hooks:
       - id: black
-        args: ["--line-length", "100", "--preview"]
+  - repo: https://github.com/PyCQA/autoflake
+    rev: v2.3.1
+    hooks:
+    -   id: autoflake
   - repo: https://github.com/pycqa/flake8
-    rev: 7.1.0
+    rev: 7.1.1
     hooks:
       - id: flake8
         args: ["--show-source"]
+        additional_dependencies:
+        - flake8-pyproject
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.2.6
+    rev: v2.4.0
     hooks:
       - id: codespell
         additional_dependencies:
