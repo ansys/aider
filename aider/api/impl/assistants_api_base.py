@@ -20,18 +20,25 @@ So this is a "stateful" "transactional" api. Whereas the other is a "stateful" "
 
 Some term translation:
 
-* assistant_id -> branch starting with aider/
-* thread_id -> history file suffix (small hash) inside a threads/ folder
-* message_id -> the counting integer of the message inside input-history-file
-
-### To implement later
-* run_id -> In the history file, example: # aider chat started at 2024-06-05 12:24:25
-* step_id -> A counting integer starting at the run_id counting the > or ####
+* assistant_id -> aider config name in `./.aider/assistants/` folder
+* thread_id -> chat history file suffix (small hash) inside the `.aider/threads/` folder
+* message_id -> the counting integer of the message inside chat history file
+* run_id -> the git commit id at the end of a run
+* step_id -> the counting integer of the step inside the diff of the chat history file between run_id and HEAD~1
 
 """
 
-from typing import ClassVar, List, Optional, Tuple
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from uuid import uuid4
 
+import yaml
+from configargparse import Namespace
+from fastapi.exceptions import HTTPException
+from git import Repo
 from pydantic import Field, StrictInt, StrictStr
 from typing_extensions import Annotated
 
@@ -58,6 +65,10 @@ from aider.api.models.run_object import RunObject
 from aider.api.models.run_step_object import RunStepObject
 from aider.api.models.submit_tool_outputs_run_request import SubmitToolOutputsRunRequest
 from aider.api.models.thread_object import ThreadObject
+from aider.args import get_parser
+from aider.utils import split_chat_history_markdown
+
+REPO = Repo(".")
 
 
 class AiderAssistantsApi(BaseAssistantsApi):
@@ -81,8 +92,129 @@ class AiderAssistantsApi(BaseAssistantsApi):
         self,
         create_assistant_request: CreateAssistantRequest,
     ) -> AssistantObject:
-        """Creates a branch and resets all the history files and tracks them"""
-        raise NotImplementedError("TODO")
+        """Edits and creates a new aider config, and sets model info."""
+        # Validate basic info
+        if not create_assistant_request.name:
+            raise HTTPException(
+                status_code=417, detail="name needs to be set, as that will be the id"
+            )
+        ## Name needs to be variable format, no spaces or special characters
+        if not re.match(r"^[a-zA-Z0-9_]*$", create_assistant_request.name):
+            raise HTTPException(
+                status_code=417, detail="name must be alphanumeric with underscores"
+            )
+        if not create_assistant_request.model.actual_instance:
+            raise HTTPException(status_code=417, detail="model needs to be set")
+        if create_assistant_request.tools:
+            raise HTTPException(status_code=417, detail="tools not supported yet")
+        if create_assistant_request.tool_resources:
+            raise HTTPException(status_code=417, detail="tool_resources not supported yet")
+        if create_assistant_request.response_format != "auto":
+            raise HTTPException(status_code=417, detail="only response_format 'auto' supported")
+        if create_assistant_request.metadata:
+            raise HTTPException(status_code=417, detail="metadata not supported yet")
+        if create_assistant_request.description:
+            raise HTTPException(
+                status_code=417, detail="no way to save a description, put info in name"
+            )
+
+        id = create_assistant_request.name
+        model_name = create_assistant_request.model.actual_instance
+
+        # make an aider config at `.aider/assistants/`
+        # Then get the current arguments
+        # And start creating a new config (to be saved later)
+        this_config = Path(f".aider/assistants/{id}.conf.yml")
+        if this_config.exists():
+            raise HTTPException(status_code=417, detail="id already exists, try again")
+        this_config.mkdir(parents=True, exist_ok=True)
+        this_config.touch()
+        REPO.index.add(items=[this_config], force=True)
+        base_config = Path(os.getenv("AIDER_CONFIG_PATH", ".aider.conf.yml"))
+        if base_config.exists():
+            default_config_files = [base_config, this_config]
+        else:
+            default_config_files = [this_config]
+        config: Namespace = get_parser(
+            default_config_files=default_config_files, git_root="."
+        ).parse_args()
+        new_config = {}
+
+        # Also edit or create `.aider.model.settings.yml` or AIDER_MODEL_SETTINGS_FILE
+        model_settings_file = Path(
+            os.getenv("AIDER_MODEL_SETTINGS_FILE", None)
+            or config.model_settings_file
+            or ".aider.model.settings.yml"
+        )
+        if model_settings_file.exists() and model_settings_file.is_file():
+            model_settings = yaml.safe_load(model_settings_file.read_text())
+        else:
+            model_settings = []
+        ## Check if alias is already in use
+        for model in model_settings:
+            if model.get("name") == create_assistant_request.name:
+                raise HTTPException(status_code=409, detail="model already in use")
+        ## Add our model settings
+        assert isinstance(config.alias, list), type(config.alias)
+        new_config["alias"] = config.alias
+        new_config["alias"].append(f"{id}:{model_name}")
+        new_model_settings: Dict[str, Any] = {"name": id}
+        if create_assistant_request.temperature is not None:
+            new_model_settings["use_temperature"] = True
+            new_model_settings["extra_params"]["temperature"] = create_assistant_request.temperature
+        if create_assistant_request.top_p:
+            new_model_settings["extra_params"]["top_p"] = create_assistant_request.top_p
+
+        # Instructions will be set up as simple read only files
+        # REF: https://aider.chat/docs/faq.html#can-i-change-the-system-prompts-that-aider-uses
+        if create_assistant_request.instructions:
+            Path(".aider/instructions/").mkdir(parents=True, exist_ok=True)
+            Path(f".aider/instructions/{id}.md").write_text(create_assistant_request.instructions)
+            assert isinstance(config.read, list), type(config.read)
+            new_config["read"] += config.read
+            new_config["read"].append(f".aider/instructions/{id}.md")
+
+        # TODO: We could potentially use metadata to set other model and aider settings, but
+        # this is not how the Assistant docs say to use it
+        # metadata = create_assistant_request.metadata
+        # if metadata:
+        #     if "model_settings" in metadata:
+        #         if isinstance(metadata["model_settings"], dict):
+        #             new_model_settings.update(metadata["model_settings"])
+        #         else:
+        #             raise HTTPException(
+        #                 status_code=417, detail="model_settings must be a dict"
+        #             )
+        #     if "aider_config" in metadata:
+        #         if isinstance(metadata["aider_config"], dict):
+        #             new_config.update(metadata["aider_config"])
+        #         else:
+        #             raise HTTPException(
+        #                 status_code=417, detail="aider_config must be a dict"
+        #             )
+
+        # Save our new files and git commit
+        model_settings.append(new_model_settings)
+        model_settings_file.write_text(yaml.dump(model_settings))
+        this_config.write_text(yaml.dump(new_config))
+        REPO.index.add(items=[model_settings_file, this_config], force=True)
+        commit = REPO.index.commit(f"Add {id} config and add {id} to model settings")
+
+        return AssistantObject(
+            id=commit.hexsha,
+            name=create_assistant_request.name,
+            object="assistant",
+            model=model_name,
+            created_at=(datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds(),
+            temperature=create_assistant_request.temperature,
+            description=None,
+            instructions=create_assistant_request.instructions,
+            tools=[],
+            tool_resources=None,
+            metadata=None,
+            top_p=create_assistant_request.top_p,
+            response_format=create_assistant_request.response_format,
+        )
 
     async def create_message(
         self,
@@ -309,7 +441,8 @@ class AiderAssistantsApi(BaseAssistantsApi):
         ],
     ) -> ListMessagesResponse:
         """Just returns the aider_input_history file. IGNORES run_id"""
-        assert run_id is None, "run_id is not supported"
+        if run_id is not None:
+            raise HTTPException(status_code=417, detail="run_id not supported.")
         raise NotImplementedError("LATER")
 
     async def list_run_steps(
