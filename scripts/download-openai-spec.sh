@@ -82,7 +82,6 @@ copy_and_sed() {
     fi
 }
 copy_and_sed $TEMP_FASTAPI_DIR/src/openapi_server/security_api.py ./aider/api/security_api.py
-copy_and_sed $TEMP_FASTAPI_DIR/src/openapi_server/main.py ./aider/api/main.py
 
 # apis
 copy_and_sed $TEMP_FASTAPI_DIR/src/openapi_server/apis/assistants_api.py ./aider/api/apis/assistants_api.py
