@@ -68,8 +68,19 @@ from aider.api.models.thread_object import ThreadObject
 from aider.args import get_parser
 from aider.utils import split_chat_history_markdown
 
+# We always want to be on an up-to-date AIDER_MAIN_BRANCH
+# Fail otherwise
 REPO = Repo(".")
+ORIGIN = REPO.remote(name='origin')
+DEFAULT_BRANCH = os.getenv("DEFAULT_BRANCH", "main")
+AIDER_MAIN_BRANCH = os.getenv("AIDER_MAIN_BRANCH", "aider")
 
+def git_root():
+    REPO.git.checkout(DEFAULT_BRANCH)
+    ORIGIN.pull()
+    REPO.git.checkout(AIDER_MAIN_BRANCH)
+    ORIGIN.pull()
+    REPO.git.rebase(DEFAULT_BRANCH)
 
 class AiderAssistantsApi(BaseAssistantsApi):
     subclasses: ClassVar[Tuple] = ()
@@ -117,7 +128,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
             raise HTTPException(
                 status_code=417, detail="no way to save a description, put info in name"
             )
-
+        git_root()
         id = create_assistant_request.name
         model_name = create_assistant_request.model.actual_instance
 
@@ -198,7 +209,8 @@ class AiderAssistantsApi(BaseAssistantsApi):
         model_settings_file.write_text(yaml.dump(model_settings))
         this_config.write_text(yaml.dump(new_config))
         REPO.index.add(items=[model_settings_file, this_config], force=True)
-        commit = REPO.index.commit(f"Add {id} config and add {id} to model settings")
+        commit = REPO.index.commit(f"aider: Add {id} config and add {id} to model settings")
+        ORIGIN.push()
 
         return AssistantObject(
             id=commit.hexsha,
@@ -215,6 +227,54 @@ class AiderAssistantsApi(BaseAssistantsApi):
             top_p=create_assistant_request.top_p,
             response_format=create_assistant_request.response_format,
         )
+
+    async def create_thread(
+        self,
+        create_thread_request: Optional[CreateThreadRequest],
+    ) -> ThreadObject:
+        """Creates a new set of history objects under the thread id and tracks them under a new branch"""
+        if create_thread_request is None:
+            raise HTTPException(status_code=417, detail="create_thread_request must be set")
+        if not create_thread_request.metadata:
+            raise HTTPException(status_code=417, detail="metadata must be set")
+        if 'name' not in create_thread_request.metadata:
+            raise HTTPException(status_code=417, detail="metadata must have a name")
+        if not re.match(r"^[a-zA-Z0-9_]*$", create_thread_request.metadata["name"]):
+            raise HTTPException(status_code=417, detail="name must be alphanumeric with underscores")
+        name = create_thread_request.metadata["name"]
+
+        git_root()
+
+        # Create a branch from the name
+        if name in REPO.heads:
+            raise HTTPException(status_code=409, detail="branch already exists, try again")
+        if name.startswith("aider/"):
+            name = name[6:]
+        REPO.create_head(f"aider/{name}")
+
+        # Create your chat history file
+        Path(".aider/threads/").mkdir(parents=True, exist_ok=True)
+        Path(f".aider/threads/{name}.chat.history.md").touch()
+        REPO.index.add(items=[f".aider/threads/{name}.chat.history.md"], force=True)
+        REPO.index.commit(f"aider: Create thread {name}")
+
+        # Use other methods to create the messages
+        if create_thread_request.messages is not None:
+            for message in create_thread_request.messages:
+                await self.create_message(
+                        thread_id=name,
+                        create_message_request=message
+                )
+
+        return ThreadObject(
+            id=name,
+            object="thread",
+            created_at=(datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds(),
+            tool_resources=None,
+            metadata=None,
+        )
+
+
 
     async def create_message(
         self,
@@ -248,13 +308,6 @@ class AiderAssistantsApi(BaseAssistantsApi):
         ],
     ) -> RunObject:
         """Run aider"""
-        raise NotImplementedError("TODO")
-
-    async def create_thread(
-        self,
-        create_thread_request: Optional[CreateThreadRequest],
-    ) -> ThreadObject:
-        """Creates a new set of history objects under the thread id and tracks them"""
         raise NotImplementedError("TODO")
 
     async def create_thread_and_run(
