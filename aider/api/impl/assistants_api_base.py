@@ -29,8 +29,9 @@ Some term translation:
 """
 
 import os
+import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -43,6 +44,7 @@ from pydantic import Field, StrictInt, StrictStr
 from typing_extensions import Annotated
 
 from aider.api.apis.assistants_api_base import BaseAssistantsApi
+from aider.api.models import create_thread_request
 from aider.api.models.assistant_object import AssistantObject
 from aider.api.models.create_assistant_request import CreateAssistantRequest
 from aider.api.models.create_message_request import CreateMessageRequest
@@ -56,7 +58,10 @@ from aider.api.models.list_assistants_response import ListAssistantsResponse
 from aider.api.models.list_messages_response import ListMessagesResponse
 from aider.api.models.list_run_steps_response import ListRunStepsResponse
 from aider.api.models.list_runs_response import ListRunsResponse
+from aider.api.models.message_content_text_object import MessageContentTextObject
+from aider.api.models.message_content_text_object_text import MessageContentTextObjectText
 from aider.api.models.message_object import MessageObject
+from aider.api.models.message_object_content_inner import MessageObjectContentInner
 from aider.api.models.modify_assistant_request import ModifyAssistantRequest
 from aider.api.models.modify_message_request import ModifyMessageRequest
 from aider.api.models.modify_run_request import ModifyRunRequest
@@ -66,6 +71,7 @@ from aider.api.models.run_step_object import RunStepObject
 from aider.api.models.submit_tool_outputs_run_request import SubmitToolOutputsRunRequest
 from aider.api.models.thread_object import ThreadObject
 from aider.args import get_parser
+from aider.io import InputOutput
 from aider.utils import split_chat_history_markdown
 
 # We always want to be on an up-to-date AIDER_MAIN_BRANCH
@@ -217,7 +223,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
             name=create_assistant_request.name,
             object="assistant",
             model=model_name,
-            created_at=(datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds(),
+            created_at=int((datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds()),
             temperature=create_assistant_request.temperature,
             description=None,
             instructions=create_assistant_request.instructions,
@@ -257,6 +263,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         Path(f".aider/threads/{name}.chat.history.md").touch()
         REPO.index.add(items=[f".aider/threads/{name}.chat.history.md"], force=True)
         REPO.index.commit(f"aider: Create thread {name}")
+        ORIGIN.push()
 
         # Use other methods to create the messages
         if create_thread_request.messages is not None:
@@ -269,7 +276,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         return ThreadObject(
             id=name,
             object="thread",
-            created_at=(datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds(),
+            created_at=int((datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds()),
             tool_resources=None,
             metadata=None,
         )
@@ -288,7 +295,44 @@ class AiderAssistantsApi(BaseAssistantsApi):
         create_message_request: CreateMessageRequest,
     ) -> MessageObject:
         """Add a user message to the history"""
-        raise NotImplementedError("TODO")
+        # Guards
+        if create_message_request.metadata:
+            raise HTTPException(status_code=417, detail="metadata not supported yet")
+
+        # Checkout the thread
+        git_root()
+        REPO.git.checkout(f"aider/{thread_id}")
+
+        io = InputOutput(chat_history_file=f".aider/threads/{thread_id}.chat.history.md")
+        content = str(create_message_request.content)
+        if create_message_request.role == "user":
+            io.user_input(content)
+        elif create_message_request.role == "assistant":
+            raise HTTPException(status_code=417, detail="assistant messages not supported yet")
+        else:
+            raise HTTPException(status_code=417, detail="role must be 'user'")
+
+        # Commit the changes
+        REPO.index.add(items=[f".aider/threads/{thread_id}.chat.history.md"], force=True)
+        commit = REPO.index.commit(f"aider: Add '{create_message_request.role}' message to {thread_id}")
+        ORIGIN.push()
+
+        return MessageObject(
+            id=commit.hexsha,
+            assistant_id=None,
+            run_id=None,
+            attachments=None,
+            metadata=None,
+            object='thread.message',
+            incomplete_details=None,
+            incomplete_at=None,
+            created_at=int((datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds()),
+            thread_id=thread_id,
+            status="completed",
+            role=create_message_request.role,
+            content=[MessageObjectContentInner(MessageContentTextObject(type="text", text=MessageContentTextObjectText(value=content, annotations=[])))],
+            completed_at=int((datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds()),
+        )
 
     async def create_run(
         self,
