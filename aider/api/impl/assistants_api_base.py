@@ -74,6 +74,7 @@ from aider.args import get_parser
 from aider.io import InputOutput
 from aider.utils import split_chat_history_markdown
 
+from functools import wraps
 # We always want to be on an up-to-date AIDER_MAIN_BRANCH
 # Fail otherwise
 REPO = Repo(".")
@@ -81,12 +82,27 @@ ORIGIN = REPO.remote(name='origin')
 DEFAULT_BRANCH = os.getenv("DEFAULT_BRANCH", "main")
 AIDER_MAIN_BRANCH = os.getenv("AIDER_MAIN_BRANCH", "aider")
 
-def git_root():
-    REPO.git.checkout(DEFAULT_BRANCH)
-    ORIGIN.pull()
-    REPO.git.checkout(AIDER_MAIN_BRANCH)
-    ORIGIN.pull()
-    REPO.git.rebase(DEFAULT_BRANCH)
+
+def git_root(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        # Perform the initial git operations
+        REPO.git.checkout(DEFAULT_BRANCH)
+        ORIGIN.pull()
+        REPO.git.checkout(AIDER_MAIN_BRANCH)
+        ORIGIN.pull()
+        REPO.git.rebase(DEFAULT_BRANCH)
+
+        try:
+            # Call the wrapped function
+            result = func(*args, **kwargs)
+        finally:
+            # Perform the final push operation
+            ORIGIN.push()
+
+        return result
+
+    return wrapper
 
 class AiderAssistantsApi(BaseAssistantsApi):
     subclasses: ClassVar[Tuple] = ()
@@ -105,6 +121,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """cancel_run is not supported"""
         raise NotImplementedError("WON'T DO")
 
+    @git_root
     async def create_assistant(
         self,
         create_assistant_request: CreateAssistantRequest,
@@ -134,7 +151,6 @@ class AiderAssistantsApi(BaseAssistantsApi):
             raise HTTPException(
                 status_code=417, detail="no way to save a description, put info in name"
             )
-        git_root()
         id = create_assistant_request.name
         model_name = create_assistant_request.model.actual_instance
 
@@ -234,6 +250,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
             response_format=create_assistant_request.response_format,
         )
 
+    @git_root
     async def create_thread(
         self,
         create_thread_request: Optional[CreateThreadRequest],
@@ -249,7 +266,6 @@ class AiderAssistantsApi(BaseAssistantsApi):
             raise HTTPException(status_code=417, detail="name must be alphanumeric with underscores")
         name = create_thread_request.metadata["name"]
 
-        git_root()
 
         # Create a branch from the name
         if name in REPO.heads:
@@ -283,6 +299,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
 
 
 
+    @git_root
     async def create_message(
         self,
         thread_id: Annotated[
@@ -300,7 +317,6 @@ class AiderAssistantsApi(BaseAssistantsApi):
             raise HTTPException(status_code=417, detail="metadata not supported yet")
 
         # Checkout the thread
-        git_root()
         REPO.git.checkout(f"aider/{thread_id}")
 
         io = InputOutput(chat_history_file=f".aider/threads/{thread_id}.chat.history.md")
@@ -334,6 +350,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
             completed_at=int((datetime.now() - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds()),
         )
 
+    @git_root
     async def create_run(
         self,
         thread_id: Annotated[StrictStr, Field(description="The ID of the thread to run.")],
@@ -354,6 +371,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Run aider"""
         raise NotImplementedError("TODO")
 
+    @git_root
     async def create_thread_and_run(
         self,
         create_thread_and_run_request: CreateThreadAndRunRequest,
@@ -365,6 +383,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
             include=None,
         )
 
+    @git_root
     async def delete_assistant(
         self,
         assistant_id: Annotated[StrictStr, Field(description="The ID of the assistant to delete.")],
@@ -372,6 +391,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Deletes the branch called assistant_id"""
         raise NotImplementedError("TODO")
 
+    @git_root
     async def delete_message(
         self,
         thread_id: Annotated[
@@ -382,6 +402,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Deletes the message from the history files"""
         raise NotImplementedError("LATER")
 
+    @git_root
     async def delete_thread(
         self,
         thread_id: Annotated[StrictStr, Field(description="The ID of the thread to delete.")],
@@ -389,6 +410,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Deletes the history files"""
         raise NotImplementedError("TODO")
 
+    @git_root
     async def get_assistant(
         self,
         assistant_id: Annotated[
@@ -398,6 +420,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Get some info about the branch"""
         raise NotImplementedError("LATER")
 
+    @git_root
     async def get_message(
         self,
         thread_id: Annotated[
@@ -411,6 +434,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
     ) -> MessageObject:
         raise NotImplementedError("LATER")
 
+    @git_root
     async def get_run(
         self,
         thread_id: Annotated[
@@ -421,6 +445,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
     ) -> RunObject:
         raise NotImplementedError("LATER")
 
+    @git_root
     async def get_run_step(
         self,
         thread_id: Annotated[
@@ -446,6 +471,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
     ) -> RunStepObject:
         raise NotImplementedError("LATER")
 
+    @git_root
     async def get_thread(
         self,
         thread_id: Annotated[StrictStr, Field(description="The ID of the thread to retrieve.")],
@@ -453,6 +479,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Just returns the history file"""
         raise NotImplementedError("TODO")
 
+    @git_root
     async def list_assistants(
         self,
         limit: Annotated[
@@ -491,6 +518,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Just lists the aider/ branches"""
         raise NotImplementedError("TODO")
 
+    @git_root
     async def list_messages(
         self,
         thread_id: Annotated[
@@ -542,6 +570,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
             raise HTTPException(status_code=417, detail="run_id not supported.")
         raise NotImplementedError("LATER")
 
+    @git_root
     async def list_run_steps(
         self,
         thread_id: Annotated[
@@ -599,6 +628,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Just returns the aider_llm_history file"""
         raise NotImplementedError("LATER")
 
+    @git_root
     async def list_runs(
         self,
         thread_id: Annotated[
@@ -640,6 +670,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
     ) -> ListRunsResponse:
         raise NotImplementedError("LATER")
 
+    @git_root
     async def modify_assistant(
         self,
         assistant_id: Annotated[StrictStr, Field(description="The ID of the assistant to modify.")],
@@ -648,6 +679,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
         """Too complicated, not necessary"""
         raise NotImplementedError("WON'T DO")
 
+    @git_root
     async def modify_message(
         self,
         thread_id: Annotated[
@@ -658,6 +690,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
     ) -> MessageObject:
         raise NotImplementedError("LATER")
 
+    @git_root
     async def modify_run(
         self,
         thread_id: Annotated[
@@ -669,6 +702,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
     ) -> RunObject:
         raise NotImplementedError("WON'T DO")
 
+    @git_root
     async def modify_thread(
         self,
         thread_id: Annotated[
@@ -681,6 +715,7 @@ class AiderAssistantsApi(BaseAssistantsApi):
     ) -> ThreadObject:
         raise NotImplementedError("LATER")
 
+    @git_root
     async def submit_tool_ouputs_to_run(
         self,
         thread_id: Annotated[
